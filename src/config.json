@@ -1,0 +1,73 @@
+{
+    "MIN_DETECTION_CONFIDENCE": 0.6,
+    "GESTURE_COOLDOWN": 0.6,
+    "ENABLE_MOUSE": false,
+    "ENABLED_SIGNS": [
+        "THUMBS_UP",
+        "THUMBS_DOWN",
+        "OPEN_PALM",
+        "OK_SIGN",
+        "VICTORY",
+        "POINT_UP",
+        "SPIDERMAN"
+    ],
+    "PROFILES": {
+        "DEFAULT": {
+            "SWIPE_RIGHT": [
+                "right"
+            ],
+            "SWIPE_LEFT": [
+                "left"
+            ]
+        },
+        "POWERPOINT": {
+            "THUMBS_UP": [
+                "right"
+            ],
+            "THUMBS_DOWN": [
+                "left"
+            ],
+            "V_SIGN": [
+                "b"
+            ],
+            "OK_SIGN": [
+                "home"
+            ],
+            "SPIDERMAN": [
+                "end"
+            ],
+            "SWIPE_RIGHT": [
+                "right"
+            ],
+            "SWIPE_LEFT": [
+                "left"
+            ]
+        },
+        "CHROME": {
+            "THUMBS_UP": [
+                "ctrl",
+                "tab"
+            ],
+            "THUMBS_DOWN": [
+                "ctrl",
+                "shift",
+                "tab"
+            ],
+            "SWIPE_RIGHT": [
+                "alt",
+                "right"
+            ],
+            "SWIPE_LEFT": [
+                "alt",
+                "left"
+            ],
+            "OPEN_PALM": [
+                "f5"
+            ],
+            "OK_SIGN": [
+                "ctrl",
+                "t"
+            ]
+        }
+    }
+}
