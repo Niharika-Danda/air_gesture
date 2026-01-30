@@ -11,6 +11,7 @@
         "POINT_UP",
         "SPIDERMAN"
     ],
+    "AUTO_START_CAMERA": true,
     "PROFILES": {
         "DEFAULT": {
             "SWIPE_RIGHT": [

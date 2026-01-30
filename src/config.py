@@ -37,13 +37,46 @@ PROFILES = {
     }
 }
 
-# Window Title to Profile Name Mapping (substring match)
-WINDOW_PROFILE_MAP = {
-    'PowerPoint': 'POWERPOINT',
-    'Google Slides': 'POWERPOINT',
-    'Chrome': 'CHROME',
-    'Edge': 'CHROME'
+# Profile Styling (Icons & Colors & Hints)
+PROFILE_THEMES = {
+    'DEFAULT': {
+        'icon': '🏠', 
+        'color': '#1f6aa5',
+        'hints': "👋 Swipe L/R to Nav | 🤏 Click to Select"
+    },
+    'POWERPOINT': {
+        'icon': '📊', 
+        'color': '#d04423',
+        'hints': "👉 Right: Next Slide | 👈 Left: Prev Slide"
+    },
+    'CHROME': {
+        'icon': '🌐', 
+        'color': '#4285f4',
+        'hints': "👍 Next Tab | 👎 Prev Tab | ✋ Refresh"
+    },
+    'UNKNOWN': {
+        'icon': '❓', 
+        'color': '#666666',
+        'hints': "No Profile Detected"
+    }
 }
+
+# Window Matching Rules
+# Checked in order. First match determines the profile.
+# Keys: 'profile' (required), 'title' (substring), 'process' (exact), 'class' (exact)
+APP_MATCHING_RULES = [
+    # PowerPoint Presentation Mode (Priority)
+    {'profile': 'POWERPOINT', 'process': 'POWERPNT.EXE', 'class': 'screenClass'},
+    {'profile': 'POWERPOINT', 'process': 'POWERPNT.EXE', 'class': 'OpusApp'}, # Edit mode
+    {'profile': 'POWERPOINT', 'title': 'PowerPoint'}, # Fallback
+    {'profile': 'POWERPOINT', 'title': 'Google Slides'},
+    
+    # Browser
+    {'profile': 'CHROME', 'process': 'chrome.exe'},
+    {'profile': 'CHROME', 'process': 'msedge.exe'},
+    {'profile': 'CHROME', 'title': 'Chrome'}, 
+    {'profile': 'CHROME', 'title': 'Edge'}
+]
 
 # Camera and UI Configuration
 CAMERA_INDEX = 2  # Default to Webcam
@@ -107,6 +140,8 @@ AVAILABLE_SIGNS = [
 # Enabled Static Signs (User Allowlist)
 ENABLED_SIGNS = [] # Default empty, user must enable
 
+
+
 import json
 import os
 
@@ -128,6 +163,31 @@ def save_config():
     except Exception as e:
         print(f"Error saving config: {e}")
 
+def validate_config(data):
+    """Validates loaded configuration data."""
+    valid = True
+    
+    # 1. Type Validation
+    if not isinstance(data.get("MIN_DETECTION_CONFIDENCE"), (int, float)):
+        print("Config Error: MIN_DETECTION_CONFIDENCE must be a number.")
+        valid = False
+        
+    if not isinstance(data.get("GESTURE_COOLDOWN"), (int, float)):
+        print("Config Error: GESTURE_COOLDOWN must be a number.")
+        valid = False
+        
+    if not isinstance(data.get("PROFILES"), dict):
+        print("Config Error: PROFILES must be a dictionary.")
+        valid = False
+        
+    # 2. Value Range Validation
+    conf = data.get("MIN_DETECTION_CONFIDENCE", 0.5)
+    if isinstance(conf, (int, float)) and not (0.0 <= conf <= 1.0):
+        print("Config Error: MIN_DETECTION_CONFIDENCE must be between 0.0 and 1.0")
+        valid = False
+        
+    return valid
+
 def load_config():
     global MIN_DETECTION_CONFIDENCE, GESTURE_COOLDOWN, PROFILES, ENABLE_MOUSE, ENABLED_SIGNS, AUTO_START_CAMERA
     if not os.path.exists(CONFIG_FILE):
@@ -136,6 +196,11 @@ def load_config():
     try:
         with open(CONFIG_FILE, 'r') as f:
             data = json.load(f)
+            
+        if not validate_config(data):
+            print("WARNING: Config validation failed. Using defaults for invalid fields or falling back.")
+            # We could return here to use defaults, or proceed with partial loading.
+            # For now, let's try to load what we can, but errors are logged.
             
         MIN_DETECTION_CONFIDENCE = data.get("MIN_DETECTION_CONFIDENCE", MIN_DETECTION_CONFIDENCE)
         GESTURE_COOLDOWN = data.get("GESTURE_COOLDOWN", GESTURE_COOLDOWN)

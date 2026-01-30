@@ -14,6 +14,45 @@ import mediapipe.python.solutions.drawing_utils as mp_drawing
 import math
 from collections import deque, Counter
 import time
+import random
+
+class Particle:
+    def __init__(self, x, y, color):
+        self.x = x
+        self.y = y
+        self.vx = random.uniform(-2, 2)
+        self.vy = random.uniform(-2, 2)
+        self.life = 1.0
+        self.color = color
+        self.decay = random.uniform(0.05, 0.1)
+
+    def update(self):
+        self.x += self.vx
+        self.y += self.vy
+        self.life -= self.decay
+        return self.life > 0
+
+    def draw(self, frame):
+        if self.life > 0:
+            alpha = int(self.life * 255)
+            # Overlay logic skipped for performance, drawing solid for now
+            cv2.circle(frame, (int(self.x), int(self.y)), 2, self.color, -1)
+
+class ParticleSystem:
+    def __init__(self):
+        self.particles = []
+
+    def emit(self, x, y, count=5, color=(255, 255, 0)):
+        for _ in range(count):
+            self.particles.append(Particle(x, y, color))
+
+    def update_and_draw(self, frame):
+        alive_particles = []
+        for p in self.particles:
+            if p.update():
+                p.draw(frame)
+                alive_particles.append(p)
+        self.particles = alive_particles
 
 # Position smoothing imports
 from src.position_smoother import LandmarkSmoother, PointerSmoother
@@ -58,6 +97,12 @@ class GestureProcessor:
         
         # Debounce/Robustness
         self.missed_frames = 0
+        
+        # Visual Effects State
+        # Visual Effects State
+        self.trail_history = deque(maxlen=15) # For pointer trail
+        self.particle_system = ParticleSystem()
+        self.last_swipe_time = 0
         
         # Position smoothers for stable tracking
         self.landmark_smoother = LandmarkSmoother(
@@ -118,7 +163,7 @@ class GestureProcessor:
                 # Apply position smoothing to all landmarks for stable tracking
                 self.filtered_landmarks = self.landmark_smoother.update(self.landmarks)
                 
-                self.mp_drawing.draw_landmarks(frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
+                # self.mp_drawing.draw_landmarks(frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
                 
                 # --- POINTER LOGIC (Index Tip with Smoothing) ---
                 # Get raw positions
@@ -143,7 +188,22 @@ class GestureProcessor:
                     'click': is_clicking
                 }
                 
-                # --- GESTURE LOGIC ---
+                # --- VISUAL EFFECTS ---
+                h, w, _ = frame.shape
+                
+                # Emit particles on movement (Index Finger)
+                if abs(curr_x - self.prev_pointer_x) > 0.005 or abs(curr_y - self.prev_pointer_y) > 0.005:
+                     self.particle_system.emit(curr_x * w, curr_y * h, count=1, color=(0, 255, 255)) # Cyan sparks
+                
+                self.prev_pointer_x = curr_x
+                self.prev_pointer_y = curr_y
+
+                # Draw Visuals
+                self._draw_trail(frame, (int(curr_x * w), int(curr_y * h)))
+                self.particle_system.update_and_draw(frame)
+                self._draw_neon_landmarks(frame, hand_landmarks)
+                
+                # --- GESTURE PRE-CALC ---
                 # Calculate Centroid (Average of Wrist, Index MCP, Pinky MCP)
                 wrist = self.landmarks[0]
                 index_mcp = self.landmarks[5]
@@ -151,6 +211,8 @@ class GestureProcessor:
                 
                 cx = (wrist.x + index_mcp.x + pinky_mcp.x) / 3.0
                 cy = (wrist.y + index_mcp.y + pinky_mcp.y) / 3.0
+                current_centroid = (cx, cy)
+
                 current_centroid = (cx, cy)
                 
                 # 1. Run Trajectory-Based Swipe Detection
@@ -311,3 +373,57 @@ class GestureProcessor:
     def close(self):
         """Releases the hand tracking resources."""
         self.hands.close()
+
+    def _draw_trail(self, frame, point):
+        """Draws a fading trail following the pointer."""
+        self.trail_history.append(point)
+        
+        for i in range(1, len(self.trail_history)):
+            # Fade out tail
+            thickness = int(math.sqrt(float(i + 1)) * 1.5)
+            # Make it look like a comet (Cyan to White)
+            pt1 = self.trail_history[i - 1]
+            pt2 = self.trail_history[i]
+            
+            # Simple Cyan Trail
+            cv2.line(frame, pt1, pt2, (255, 255, 0), thickness) 
+
+    def _draw_neon_landmarks(self, frame, hand_landmarks):
+        """Draws hand landmarks with a neon glow effect."""
+        h, w, _ = frame.shape
+        
+        # 1. Draw Connections (Thick, Semi-transparent background + Thin bright foreground)
+        connections = self.mp_hands.HAND_CONNECTIONS
+        
+        # Cache coordinates
+        coords = {}
+        for idx, landmark in enumerate(hand_landmarks.landmark):
+            coords[idx] = (int(landmark.x * w), int(landmark.y * h))
+            
+        # Draw Glow Lines (Darker Cyan)
+        for start_idx, end_idx in connections:
+             if start_idx in coords and end_idx in coords:
+                 cv2.line(frame, coords[start_idx], coords[end_idx], (200, 200, 0), 6) # Glow
+                 
+        # Draw Core Lines (White/Bright)
+        for start_idx, end_idx in connections:
+             if start_idx in coords and end_idx in coords:
+                 cv2.line(frame, coords[start_idx], coords[end_idx], (255, 255, 255), 2) # Core
+
+        # 2. Draw Landmarks (Glowing Orbs)
+        # Finger Tips get special color? (e.g., Index = Magenta)
+        tips = [4, 8, 12, 16, 20]
+        
+        for idx, (cx, cy) in coords.items():
+            # Base Glow
+            radius = 6
+            color = (0, 255, 255) # Yellow-ish
+            if idx in tips:
+                radius = 8
+                color = (0, 255, 0) # Green Tips (Index) or just variable
+                if idx == 8: color = (255, 0, 255) # Magenta Index
+                
+            # Outer Glow
+            cv2.circle(frame, (cx, cy), radius + 4, color, -1)
+            # Inner Core
+            cv2.circle(frame, (cx, cy), radius - 2, (255, 255, 255), -1)

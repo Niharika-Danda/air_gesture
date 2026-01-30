@@ -68,98 +68,146 @@ class ToastOverlay:
     def hide(self):
         self.top.withdraw()
 
+from src.event_bus import EventBus
+
 class AppUIManager:
     """
     Manages the CustomTkinter-based graphical user interface.
     """
-    def __init__(self, root, start_callback, stop_callback, window_title, available_cameras, change_camera_callback, config_callback):
+    def __init__(self, root, window_title, available_cameras):
+        self.bus = EventBus()
         self.root = root
         self.root.title(window_title)
-        self.root.protocol("WM_DELETE_WINDOW", stop_callback)
-        self.config_callback = config_callback
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        
+        # Subscriptions
+        self.bus.subscribe("camera:status", self.update_status)
+        self.bus.subscribe("camera:started", self.on_camera_started)
+        self.bus.subscribe("camera:stopped", self.on_camera_stopped)
+        
+        self.is_camera_running = False
         
         # Initialize Toast
         self.toast = ToastOverlay(self.root)
         
-        # Determine geometry
-        self.root.geometry("900x750")
-
-        # Main Layout
-        self.main_frame = ctk.CTkFrame(self.root, corner_radius=0)
-        self.main_frame.grid(row=0, column=0, sticky="nsew")
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(0, weight=1)
-
-        # Video Area (Canvas needs to be standard tk for performance/compatibility)
-        self.canvas_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        self.canvas_frame.grid(row=0, column=0, padx=20, pady=(20, 10), sticky="nsew")
-        self.main_frame.rowconfigure(0, weight=1)
-        self.main_frame.columnconfigure(0, weight=1)
+        # Animation State
+        self.pulse_job = None
+        self.pulse_alpha = 1.0
+        self.pulse_direction = -1
         
-        # Canvas
-        self.canvas = tk.Canvas(self.canvas_frame, bg="#1a1a1a", width=800, height=600, highlightthickness=0, borderwidth=0)
-        self.canvas.pack(fill="both", expand=True)
+        self.root.geometry("1100x750") # Wider for sidebar
 
-        # Visual Feedback Label (Overlay on top of canvas)
-        self.feedback_label = None # Created dynamically
+        # --- Main Container (Sidebar + Content) ---
+        self.root.grid_columnconfigure(1, weight=1)
+        self.root.grid_rowconfigure(0, weight=1)
 
-        # Controls Area
-        self.controls_frame = ctk.CTkFrame(self.main_frame, height=100)
-        self.controls_frame.grid(row=1, column=0, padx=20, pady=20, sticky="ew")
-        self.controls_frame.columnconfigure(1, weight=1) # Spacer
+        # 1. Sidebar Frame
+        self.sidebar_frame = ctk.CTkFrame(self.root, width=200, corner_radius=0)
+        self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
+        self.sidebar_frame.grid_rowconfigure(5, weight=1) # Spacer push to bottom
 
-        # Status
-        self.status_label = ctk.CTkLabel(self.controls_frame, text="Status: Idle - Press Start", font=("Roboto Medium", 16))
-        self.status_label.grid(row=0, column=0, padx=20, pady=15, sticky="w")
+        # App Logo / Title
+        self.logo_label = ctk.CTkLabel(self.sidebar_frame, text="Air Gesture\nController", font=("Roboto", 20, "bold"))
+        self.logo_label.grid(row=0, column=0, padx=20, pady=(20, 10))
+
+        # Controls in Sidebar
+        self.start_button = ctk.CTkButton(self.sidebar_frame, text="Start Camera", command=self.on_start_click, fg_color="#28a745", hover_color="#218838", state="disabled")
+        self.start_button.grid(row=1, column=0, padx=20, pady=10)
+
+        self.stop_button = ctk.CTkButton(self.sidebar_frame, text="Stop Camera", command=self.on_stop_click, fg_color="#dc3545", hover_color="#c82333", state="disabled")
+        self.stop_button.grid(row=2, column=0, padx=20, pady=10)
         
         # Camera Selection
-        self.camera_var = ctk.StringVar(value=available_cameras[0] if available_cameras else "No Camera")
+        ctk.CTkLabel(self.sidebar_frame, text="Select Camera:", anchor="w").grid(row=3, column=0, padx=20, pady=(20, 0), sticky="w")
         self.camera_combo = ctk.CTkComboBox(
-            self.controls_frame, 
+            self.sidebar_frame, 
             values=available_cameras if available_cameras else ["No Camera"],
-            command=lambda choice: change_camera_callback(self._get_cam_index(choice, available_cameras)),
-            width=200
+            command=self.on_camera_change
         )
-        self.camera_combo.grid(row=0, column=2, padx=10, pady=15)
+        self.camera_combo.grid(row=4, column=0, padx=20, pady=10)
         
-        # Buttons (disabled initially until camera starts)
-        self.start_button = ctk.CTkButton(self.controls_frame, text="Start", command=start_callback, fg_color="#28a745", hover_color="#218838", state="disabled")
-        self.start_button.grid(row=0, column=3, padx=10, pady=15)
+        # Settings at Bottom
+        self.settings_button = ctk.CTkButton(self.sidebar_frame, text="Settings ⚙️", command=self.open_settings, fg_color="transparent", border_width=1)
+        self.settings_button.grid(row=6, column=0, padx=20, pady=20)
 
-        self.stop_button = ctk.CTkButton(self.controls_frame, text="Stop", command=stop_callback, fg_color="#dc3545", hover_color="#c82333", state="disabled")
-        self.stop_button.grid(row=0, column=4, padx=10, pady=15)
+        # 2. Content Frame
+        self.content_frame = ctk.CTkFrame(self.root, corner_radius=0, fg_color="transparent")
+        self.content_frame.grid(row=0, column=1, sticky="nsew")
+        self.content_frame.grid_rowconfigure(1, weight=1) # Canvas expands
+        self.content_frame.grid_columnconfigure(0, weight=1)
 
-        # Settings Button
-        self.settings_button = ctk.CTkButton(self.controls_frame, text="⚙️", width=40, command=self.open_settings)
-        self.settings_button.grid(row=0, column=5, padx=(0, 20), pady=15)
+        # 2.1 Stats Dashboard (Top Bar)
+        self.stats_frame = ctk.CTkFrame(self.content_frame, height=80, corner_radius=10)
+        self.stats_frame.grid(row=0, column=0, sticky="ew", padx=20, pady=20)
+        self.stats_frame.grid_columnconfigure((0,1,2,3), weight=1)
+        
+        # Helper to create stats
+        def create_stat_card(parent, col, title, initial_value, icon_char):
+             card = ctk.CTkFrame(parent, fg_color="transparent")
+             card.grid(row=0, column=col, padx=10, pady=10)
+             
+             icon = ctk.CTkLabel(card, text=icon_char, font=("Roboto", 24))
+             icon.pack(side="left", padx=(0, 10))
+             
+             data = ctk.CTkFrame(card, fg_color="transparent")
+             data.pack(side="left")
+             
+             lbl_title = ctk.CTkLabel(data, text=title, font=("Roboto", 12), text_color="gray")
+             lbl_title.pack(anchor="w")
+             
+             lbl_val = ctk.CTkLabel(data, text=initial_value, font=("Roboto", 16, "bold"))
+             lbl_val.pack(anchor="w")
+             return lbl_val
 
+        self.fps_label = create_stat_card(self.stats_frame, 0, "FPS", "0", "⚡")
+        self.profile_label = create_stat_card(self.stats_frame, 1, "Profile", "Default", "🏠")
+        self.gesture_label = create_stat_card(self.stats_frame, 2, "Last Gesture", "-", "👋")
+        
+        # Status Label (merged into dashboard or separate)
+        self.status_label = ctk.CTkLabel(self.stats_frame, text="Idle", font=("Roboto", 14), text_color="gray")
+        self.status_label.grid(row=0, column=3, padx=20)
+        
+        # Smart Context Hints Label (Bottom Row of Content Frame or below dashboard)
+        self.hints_label = ctk.CTkLabel(self.content_frame, text="", font=("Roboto", 12, "italic"), text_color="#aaaaaa")
+        self.hints_label.grid(row=2, column=0, pady=5)
+        
+        # 2.2 Video Canvas
+        self.canvas_frame = ctk.CTkFrame(self.content_frame) # Background frame for canvas
+        self.canvas_frame.grid(row=1, column=0, sticky="nsew", padx=20, pady=(0, 20))
+        
+        self.canvas = tk.Canvas(self.canvas_frame, bg="#1a1a1a", highlightthickness=0, borderwidth=0)
+        self.canvas.pack(fill="both", expand=True)
+
+        # Opacity Slider (Moving to corner or sidebar? Let's keep in sidebar for cleanliness)
+        ctk.CTkLabel(self.sidebar_frame, text="Overlay Opacity:", anchor="w").grid(row=7, column=0, padx=20, pady=(10,0), sticky="w")
+        self.opacity_slider = ctk.CTkSlider(self.sidebar_frame, from_=0.2, to=1.0, command=self.change_opacity)
+        self.opacity_slider.set(1.0)
+        self.opacity_slider.grid(row=8, column=0, padx=20, pady=(0, 20))
+
+        # Other internal states
         self.photo = None
         self.is_overlay = False
-        self.pre_overlay_geometry = "900x750"
         self.settings_window = None
-        
-        # Preview overlay window (separate Toplevel for clean full-size preview)
         self.preview_window = None
         self.preview_canvas = None
         self.preview_photo = None
-        
-        # Drag state for overlay window
         self._drag_start_x = 0
         self._drag_start_y = 0
-        
-        # Close button for overlay
         self.close_button = None
-        self.stop_callback = stop_callback  # Store for close button
         
-        # Visual Feedback State
+        # Control Bar State
+        self.control_bar = None
+        self.control_bar_visible = False
+        
         self.gesture_overlay_text = None
         self.gesture_overlay_start_time = 0
         self.gesture_display_duration = 1.0 # Seconds
         
-        # Performance Stats
         self.current_fps = 0
-        self.tracking_quality = 0.0 # 0.0 to 1.0
+        self.tracking_quality = 0.0
         self.is_hand_detected = False
+        self.feedback_label = None
+        self.config_callback = None
 
     def _get_cam_index(self, choice, all_cams):
         try:
@@ -335,8 +383,8 @@ class AppUIManager:
 
     def _close_preview(self):
         """Close the preview and stop the camera."""
-        if self.stop_callback:
-            self.stop_callback()
+        if hasattr(self, 'bus'):
+            self.bus.publish("cmd:stop_camera")
         self.exit_overlay_mode()
 
     def enter_overlay_mode(self):
@@ -357,6 +405,8 @@ class AppUIManager:
         self.preview_window.attributes("-topmost", True)
         self.preview_window.geometry(f"480x320+{screen_width - 500}+20")
         self.preview_window.configure(bg="black")
+        # Apply current opacity
+        self.preview_window.attributes("-alpha", self.opacity_slider.get())
         self.preview_window.minsize(320, 180)  # Minimum size
         
         # Create canvas that fills the window
@@ -375,12 +425,41 @@ class AppUIManager:
         if prev_hwnd:
             self.root.after(200, lambda: ctypes.windll.user32.SetForegroundWindow(prev_hwnd))
 
+        # Initialize Control Bar
+        self._create_control_bar()
+        self.preview_window.bind("<Enter>", self._show_control_bar)
+        self.preview_window.bind("<Leave>", self._hide_control_bar_delayed)
+
+    def _show_control_bar(self, event=None):
+        if self.control_bar and self.preview_window:
+            x = self.preview_window.winfo_x() + (self.preview_window.winfo_width() // 2) - 100
+            y = self.preview_window.winfo_y() + self.preview_window.winfo_height() + 10
+            self.control_bar.geometry(f"200x50+{x}+{y}")
+            self.control_bar.deiconify()
+            self.control_bar.lift()
+            self.control_bar_visible = True
+
+    def _hide_control_bar_delayed(self, event=None):
+        # Small delay to allow moving to the bar itself
+        self.root.after(500, self._hide_control_bar)
+
+    def _hide_control_bar(self):
+        # Should check if mouse is over the bar before hiding
+        # Skipping complex check for MVP
+        # self.control_bar.withdraw()
+        pass
+
     def _on_drag_motion_preview(self, event):
         """Move the preview window as user drags."""
         if self.preview_window:
             x = self.preview_window.winfo_x() + (event.x - self._drag_start_x)
             y = self.preview_window.winfo_y() + (event.y - self._drag_start_y)
             self.preview_window.geometry(f"+{x}+{y}")
+
+    def change_opacity(self, value):
+        """Callback for opacity slider."""
+        if self.is_overlay and hasattr(self, 'preview_window') and self.preview_window and self.preview_window.winfo_exists():
+            self.preview_window.attributes("-alpha", float(value))
 
     def exit_overlay_mode(self):
         if not self.is_overlay: return
@@ -398,12 +477,51 @@ class AppUIManager:
         
         # Show main window again
         self.root.deiconify()
+        
+        if self.control_bar:
+            self.control_bar.destroy()
+            self.control_bar = None
+
+    def _create_control_bar(self):
+        """Creates the floating control bar."""
+        if self.control_bar: return
+        
+        self.control_bar = ctk.CTkToplevel(self.root)
+        self.control_bar.overrideredirect(True)
+        self.control_bar.attributes("-topmost", True)
+        self.control_bar.geometry("200x50")
+        
+        bar_frame = ctk.CTkFrame(self.control_bar, fg_color="#222222", corner_radius=10)
+        bar_frame.pack(fill="both", expand=True)
+        
+        # Buttons
+        ctk.CTkButton(bar_frame, text="⏹", width=40, height=30, fg_color="#dc3545", command=lambda: self.bus.publish("cmd:stop_camera")).pack(side="left", padx=5, pady=5)
+        ctk.CTkButton(bar_frame, text="🖼", width=40, height=30, command=self.exit_overlay_mode).pack(side="left", padx=5)
+        # Settings trigger?
+        ctk.CTkButton(bar_frame, text="⚙", width=40, height=30, command=self.open_settings).pack(side="left", padx=5)
+        
+        self.control_bar.withdraw()
+
+    def _check_control_bar_hover(self, event):
+        """Checks if mouse is near top edge of overlay to show control bar."""
+        if not self.is_overlay or not self.preview_window: return
+        
+        # Simple proximity check logic would go here if we tracked mouse globally
+        # But we only get events on the window. 
+        # Easier: Just show it always if overlay is active? Or attach to bottom of preview window.
+        
+        # Let's attach it to bottom of preview for now
+        pass
 
     def update_performance(self, fps, hand_detected, quality):
         """Update performance statistics for the dashboard."""
         self.current_fps = int(fps)
         self.is_hand_detected = hand_detected
         self.tracking_quality = quality
+        
+        # Update Dashboard FPS Card
+        if hasattr(self, 'fps_label'):
+            self.fps_label.configure(text=f"{self.current_fps}")
 
     def trigger_gesture_feedback(self, gesture_name):
         """Trigger visual feedback for a recognized gesture."""
@@ -574,11 +692,96 @@ class AppUIManager:
             self.preview_photo = None
 
     def update_status(self, text):
-        self.status_label.configure(text=text)
-        # Also trigger feedback if it's a recognition event (heuristic)
-        if ":" in text and "Profile" not in text: 
-            # e.g., "DEFAULT: THUMBS_UP" -> Show "THUMBS_UP"
-            gesture = text.split(":")[-1].strip()
-            self.trigger_gesture_feedback(gesture) # Trigger Badge Overlay
-            self.show_feedback(gesture) # Show standard label overlay too? explicit call is better.
+        # text format examples: "Status: Starting...", "Profile: POWERPOINT", "DEFAULT: SWIPE_LEFT"
+        
+        if "Profile:" in text:
+            # Update Profile Card
+            profile_name = text.split(":")[-1].strip()
+            self.profile_label.configure(text=profile_name)
+            
+            # Update Theme Colors based on profile
+            from src import config
+            theme = config.PROFILE_THEMES.get(profile_name, config.PROFILE_THEMES['UNKNOWN'])
+            if theme:
+                 # Update Sidebar Button or Border?
+                 # For now just update icon if we support it
+                 # self.profile_icon.configure(text=theme['icon']) # If we saved reference
+                 
+                 # Update Hints
+                 if 'hints' in theme:
+                     self.hints_label.configure(text=f"Hints: {theme['hints']}")
+                 else:
+                     self.hints_label.configure(text="")
+                     
+        elif "Status:" in text:
+             # Update Status Label
+             self.status_label.configure(text=text.replace("Status: ", ""))
+             
+             if "Running" in text:
+                if self.pulse_job is None:
+                    self._pulse_status()
+             else:
+                if self.pulse_job:
+                    self.root.after_cancel(self.pulse_job)
+                    self.pulse_job = None
+                    self.status_label.configure(text_color="gray")
+
+        elif ":" in text:
+            # Gesture Event: "PROFILE: GESTURE"
+            parts = text.split(":")
+            gesture = parts[-1].strip()
+            self.gesture_label.configure(text=gesture)
+            
+            # Trigger Visuals
+            self.trigger_gesture_feedback(gesture)
+            self.toast.show(gesture)
+
+    def _pulse_status(self):
+        # Pulse the status text distinct color
+        if self.pulse_direction == -1:
+            self.pulse_alpha -= 0.1
+            if self.pulse_alpha <= 0.5: self.pulse_direction = 1
+        else:
+            self.pulse_alpha += 0.1
+            if self.pulse_alpha >= 1.0: self.pulse_direction = -1
+            
+        # Color oscillation: Gray to Green?
+        # Actually just toggle text color
+        color = "#28a745" if self.pulse_alpha > 0.8 else "#555555"
+        self.status_label.configure(text_color=color)
+        
+        self.pulse_job = self.root.after(150, self._pulse_status)
+
+
+
+    def on_start_click(self):
+        if self.is_camera_running:
+            if not self.is_overlay:
+                self.enter_overlay_mode()
+        else:
+            self.bus.publish("cmd:start_camera")
+
+    def on_stop_click(self):
+        self.bus.publish("cmd:stop_camera")
+
+    def on_camera_change(self, choice):
+        # Get index from current values
+        values = self.camera_combo._values
+        idx = self._get_cam_index(choice, values)
+        self.bus.publish("cmd:change_camera", idx)
+        
+    def _on_close(self):
+        self.bus.publish("app:quit")
+        
+    def on_camera_started(self, _=None):
+        self.is_camera_running = True
+        self.start_button.configure(state="normal")
+        self.stop_button.configure(state="normal")
+        
+    def on_camera_stopped(self, _=None):
+        self.is_camera_running = False
+        self.clear_canvas()
+        self.start_button.configure(state="normal")
+        self.stop_button.configure(state="disabled")
+        self.status_label.configure(text="Status: Stopped")
 

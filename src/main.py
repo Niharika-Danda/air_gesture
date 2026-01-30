@@ -9,11 +9,7 @@ import warnings
 
 # Suppress background library logging
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
-
-# Suppress additional library logging
 os.environ['ABSL_MIN_LOG_LEVEL'] = '3'
-
-# Suppress delegate info messages
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 
 # Suppress deprecation warnings
@@ -25,13 +21,11 @@ warnings.filterwarnings('ignore', category=DeprecationWarning)
 import cv2
 import pyautogui
 import tkinter as tk
+import ctypes
 import time
 import sys
-import os
-import ctypes
-import ctypes
-from ctypes import wintypes
 import numpy as np
+from collections import deque
 
 # Fix path
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -39,280 +33,93 @@ project_root = os.path.dirname(current_dir)
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from src.gesture_engine import GestureProcessor
+# Imports
 from src.ui_manager import AppUIManager
 from src.audio_feedback import AudioFeedback
 from src import config
-
-import threading
-import queue
-
-
-class VisionThread(threading.Thread):
-    def __init__(self, camera_index, result_queue):
-        super().__init__()
-        self.camera_index = camera_index
-        self.result_queue = result_queue
-        self.stop_event = threading.Event()
-        self.gesture_processor = None
-        self.cap = None
-        self.frame_counter = 0
-
-    def run(self):
-        try:
-            # Use DirectShow on Windows for faster/reliable camera access
-            self.cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
-            if not self.cap.isOpened():
-                print(f"ERROR: Failed to open camera {self.camera_index}")
-                return
-                
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.VIDEO_WIDTH)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.VIDEO_HEIGHT)
-            print(f"DEBUG: VisionThread started with camera {self.camera_index}")
-            
-            self.gesture_processor = GestureProcessor(
-                min_detection_confidence=config.MIN_DETECTION_CONFIDENCE,
-                min_tracking_confidence=config.MIN_TRACKING_CONFIDENCE
-            )
-            
-            while not self.stop_event.is_set():
-                ret, frame = self.cap.read()
-                if not ret:
-                    time.sleep(0.01)
-                    continue
-                
-                # Heavy processing happens here, off the UI thread
-                
-                # --- Dynamic Environmental Adaptation ---
-                self.frame_counter += 1
-                if self.frame_counter % 30 == 0: # Check every ~1 second (at 30 FPS)
-                    try:
-                        # Fast brightness check on subsampled frame
-                        small_frame = cv2.resize(frame, (320, 180))
-                        gray = cv2.cvtColor(small_frame, cv2.COLOR_BGR2GRAY)
-                        avg_brightness = np.mean(gray)
-                        
-                        # Hysteresis Logic to prevent flickering
-                        # Thresholds: ON < 80, OFF > 100
-                        if not config.LOW_LIGHT_MODE and avg_brightness < 80:
-                            config.LOW_LIGHT_MODE = True
-                        elif config.LOW_LIGHT_MODE and avg_brightness > 100:
-                            config.LOW_LIGHT_MODE = False
-                            
-                    except Exception as e:
-                        pass  # Silently ignore AutoCal errors
-
-                try:
-                    gesture, processed_frame, pointer_info, landmarks = self.gesture_processor.process_frame(frame)
-                except ValueError:
-                    # Fallback for old version or error
-                    gesture, processed_frame, pointer_info = self.gesture_processor.process_frame(frame)
-                    landmarks = None
-                
-                # Put result in queue (drop old frames if queue is full to prevent lag)
-                if self.result_queue.full():
-                    try: self.result_queue.get_nowait()
-                    except queue.Empty: pass
-                
-                self.result_queue.put((gesture, processed_frame, pointer_info, landmarks, time.time()))
-                
-                # Adaptive sleep (simple yield)
-                time.sleep(0.001)
-                
-        except Exception as e:
-            print(f"VisionThread Error: {e}")
-        finally:
-            if self.cap: self.cap.release()
-            if self.gesture_processor: self.gesture_processor.close()
-
-    def stop(self):
-        self.stop_event.set()
-
+from src.audio_feedback import AudioFeedback
+from src import config
+from src.event_bus import EventBus
+from src.camera_manager import CameraManager
+from src.window_manager import WindowManager
 
 class GestureControllerApp:
     def __init__(self, root):
         self.root = root
-        self.is_running = False
+        self.bus = EventBus()
+        self.camera_manager = CameraManager()
+        self.window_manager = WindowManager()
+        
+        # State
         self.last_gesture = None
         self.last_gesture_time = 0
         self.frame_count = 0
-        
-        # Adaptive FPS state
         self.last_hand_detected_time = time.time()
-        
-        # Profile state
         self.current_profile_name = 'DEFAULT'
+        self.fps_frame_count = 0
+        self.fps_start_time = time.time()
+        self.current_fps = 0
+        self.is_clicking = False
         
-        # Threading
-        self.result_queue = queue.Queue(maxsize=2) # Keep buffer small for low latency
-        self.vision_thread = None
+        # Capture HWND
+        self.app_hwnd = None
+        self.root.after(100, self._capture_app_hwnd)
         
-        # Camera discovery
-        self.camera_indices, self.camera_names = self.detect_cameras()
-        self.available_cameras = self.camera_names if self.camera_names else ["No Camera Found"]
-        if not self.camera_indices:
-             config.CAMERA_INDEX = -1
-        elif config.CAMERA_INDEX not in self.camera_indices:
-             # Configured camera not available, use first available
-             config.CAMERA_INDEX = self.camera_indices[0]
-             print(f"DEBUG: Configured camera not found, using Camera {config.CAMERA_INDEX}")
-        # else: keep the configured CAMERA_INDEX
-
-        # Initialize components
-        # Note: GestureProcessor is now owned by the thread
+        # Initialize UI
+        # Get cameras for UI
+        camera_names = self.camera_manager.initialize_camera_selection()
         
         self.ui_manager = AppUIManager(
             self.root,
-            self.start,
-            self.stop,
             config.WINDOW_TITLE,
-            self.available_cameras,
-            self.change_camera,
-            self.reload_configuration
+            camera_names
         )
+        self.ui_manager.config_callback = self.reload_configuration
         
-        self.app_hwnd = None
-        self.root.after(100, self._capture_app_hwnd)
+        # Audio
+        self.audio = AudioFeedback(enabled=config.AUDIO_FEEDBACK_ENABLED)
+        
+        # Start update loop
+        self.update()
+        
+        # Subscriptions
+        self.bus.subscribe("app:quit", self.on_quit)
+        self.bus.subscribe("cmd:reload_config", self.reload_configuration)
 
         # Auto-Start logic
         if getattr(config, 'AUTO_START_CAMERA', True):
             print("DEBUG: Auto-starting camera...")
-            self.root.after(500, self.start)
+            self.root.after(500, lambda: self.bus.publish("cmd:start_camera"))
 
-    def reload_configuration(self):
-        """Restarts the thread to pick up new config."""
+    def reload_configuration(self, _=None):
+        """Reloads config and restarts camera if needed."""
         print("DEBUG: Reloading configuration...")
-        if self.is_running:
-            self.stop()
-            self.root.after(500, self.start)
-        self.ui_manager.update_status("Settings Saved & Reloaded")
+        config.load_config()
+        self.bus.publish("camera:status", "Settings Reloaded")
+        
+        # Update Audio state
+        self.audio.enabled = config.AUDIO_FEEDBACK_ENABLED
 
     def _capture_app_hwnd(self):
         try:
             self.app_hwnd = ctypes.windll.user32.GetActiveWindow()
             if not self.app_hwnd:
                 self.app_hwnd = ctypes.windll.user32.FindWindowW(None, config.WINDOW_TITLE)
-            print(f"DEBUG: App HWND captured: {self.app_hwnd}")
-        except Exception as e:
-            print(f"DEBUG: Failed to capture app HWND: {e}")
+        except Exception: 
+            pass
 
-    def detect_cameras(self):
-        """Fast camera detection - returns (indices, names) with friendly names from config."""
-        indices = []
-        names = []
-        for i in range(3):  # Check first 3 camera indices
-            # Use DirectShow on Windows for faster enumeration
-            cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
-            if cap.isOpened():
-                indices.append(i)
-                # Get resolution to help identify
-                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                # Use configured name if available, otherwise show index + resolution
-                friendly_name = config.CAMERA_NAMES.get(i, f"Camera {i}")
-                names.append(f"{friendly_name} ({width}x{height})")
-                print(f"DEBUG: Camera {i} detected: {friendly_name} at {width}x{height}")
-            cap.release()
-        
-        # Reorder so configured camera appears first
-        preferred_idx = config.CAMERA_INDEX
-        if preferred_idx in indices:
-            pos = indices.index(preferred_idx)
-            # Move preferred camera to top
-            indices.insert(0, indices.pop(pos))
-            names.insert(0, names.pop(pos))
-            print(f"DEBUG: Preferred camera {preferred_idx} moved to top")
-        
-        return indices, names
-
-    def change_camera(self, selection_index):
-        if selection_index < 0 or selection_index >= len(self.camera_indices):
-            return
-        new_camera_index = self.camera_indices[selection_index]
-        
-        # Don't restart if same camera
-        if new_camera_index == config.CAMERA_INDEX and self.is_running:
-            print(f"DEBUG: Camera {new_camera_index} already selected and running")
-            return
-            
-        config.CAMERA_INDEX = new_camera_index
-        print(f"DEBUG: Switching to camera {new_camera_index}")
-        
-        if self.is_running:
-            self.stop()
-            # Wait longer for camera resource to be fully released
-            self.root.after(500, self.start)
-
-    def start(self):
-        # If already running, toggle to overlay mode
-        if self.is_running:
-            if not self.ui_manager.is_overlay:
-                self.ui_manager.enter_overlay_mode()
-            return
-            
-        # First start: Launch camera engine
-        # Safety: Check for lingering thread
-        if self.vision_thread and self.vision_thread.is_alive():
-            print("DEBUG: Waiting for previous thread to die...")
-            self.vision_thread.join(timeout=2.0)
-        
-        self.is_running = True
-        self.ui_manager.update_status("Status: Starting Engine...")
-        self.ui_manager.start_button.configure(state="disabled")
-        
-        # Reset Queue to clear slate
-        self.result_queue = queue.Queue(maxsize=2)
-        
-        # Start Vision Thread
-        self.vision_thread = VisionThread(config.CAMERA_INDEX, self.result_queue)
-        self.vision_thread.start()
-        
-        self.root.after(100, lambda: self.ui_manager.update_status("Status: Running"))
-        self.root.after(100, lambda: self.ui_manager.start_button.configure(state="normal"))
-        self.root.after(100, lambda: self.ui_manager.stop_button.configure(state="normal"))
-        # Don't enter overlay here - camera shows in main window first
-        # User clicks "Start" again to enter overlay mode
-        self.root.after(100, self.update)
-
-    def stop(self):
-        if self.is_running:
-            self.is_running = False
-            self.ui_manager.update_status("Status: Stopping...")
-            
-            if self.vision_thread:
-                self.vision_thread.stop()
-                # Wait longer for camera release (it can be slow)
-                self.vision_thread.join(timeout=2.0)
-                if self.vision_thread.is_alive():
-                     print("WARNING: VisionThread did not stop cleanly!")
-                self.vision_thread = None
-            
-            # Clear the canvas to black
-            self.ui_manager.clear_canvas()
-                
-            self.ui_manager.update_status("Status: Stopped")
-            self.ui_manager.start_button.configure(state="normal")
-            self.ui_manager.stop_button.configure(state="disabled")
-            
-        # Don't destroy root here, this is just stopping the engine
-        # self.root.destroy() is called by the window close handler
+    def on_quit(self, _=None):
+        self.bus.publish("cmd:stop_camera")
+        self.root.destroy()
+        sys.exit(0)
 
     def update(self):
-        if not self.is_running:
-            return
-
+        # Poll CameraManager for frames
         try:
-            # Poll queue for new frames
-            # We loop to drain the queue and get the LATEST frame if multiple are waiting
-            latest_data = None
-            while True:
-                try:
-                    latest_data = self.result_queue.get_nowait()
-                except queue.Empty:
-                    break
+            latest_data = self.camera_manager.get_latest_frame()
             
             if latest_data:
-                # Handle both old (4) and new (5) tuple sizes for robustness during hot-reload
+                # Unpack
                 if len(latest_data) == 5:
                     gesture, processed_frame, pointer_info, landmarks, timestamp = latest_data
                 else:
@@ -320,35 +127,29 @@ class GestureControllerApp:
                     landmarks = None
                 
                 # FPS Calculation
-                if not hasattr(self, 'fps_frame_count'):
-                    self.fps_frame_count = 0
-                    self.fps_start_time = time.time()
-                    self.current_fps = 0
-                    
                 self.fps_frame_count += 1
                 if time.time() - self.fps_start_time >= 1.0:
                     self.current_fps = self.fps_frame_count
                     self.fps_frame_count = 0
                     self.fps_start_time = time.time()
                 
-                # Performance & Feedback Update
+                # Update UI
                 hand_detected = pointer_info is not None
                 quality = 1.0 if hand_detected else 0.0
                 self.ui_manager.update_performance(self.current_fps, hand_detected, quality)
-                
                 self.ui_manager.update_frame(processed_frame)
+                
+                # Logic
                 self._handle_logic(gesture, pointer_info, landmarks)
                 
         except Exception as e:
             print(f"Update Loop Error: {e}")
 
-        # Periodically check window and fullscreen status
+        # Check Window State
         self.frame_count += 1
         if self.frame_count % 30 == 0:
             self._update_app_state()
             
-        # UI Update Rate (Fast enough to catch queue updates)
-        # Even if camera is slow, UI stays responsive
         self.root.after(10, self.update)
 
     def _handle_logic(self, gesture, pointer_info, landmarks=None):
@@ -356,42 +157,31 @@ class GestureControllerApp:
         if pointer_info and config.ENABLE_MOUSE:
             try:
                 screen_w, screen_h = pyautogui.size()
-                
-                # Mapping Camera Coordinates (0.0-1.0) to Screen
                 margin = 0.2
                 x_cam = pointer_info['x']
                 y_cam = pointer_info['y']
-                
-                # Remap: (margin, 1-margin) -> (0, 1)
                 x_norm = (x_cam - margin) / (1 - 2*margin)
                 y_norm = (y_cam - margin) / (1 - 2*margin)
-                
-                # Clamp
                 x_norm = max(0.0, min(1.0, x_norm))
                 y_norm = max(0.0, min(1.0, y_norm))
                 
                 target_x =  int(x_norm * screen_w)
                 target_y = int(y_norm * screen_h)
                 
-                # Move Mouse
                 pyautogui.moveTo(target_x, target_y)
                 
-                # Handle Click (Pinch)
                 if pointer_info['click']:
-                    if not getattr(self, 'is_clicking', False):
+                    if not self.is_clicking:
                         pyautogui.mouseDown()
                         self.is_clicking = True
-                        print("DEBUG: Mouse Down")
                 else:
-                    if getattr(self, 'is_clicking', False):
+                    if self.is_clicking:
                         pyautogui.mouseUp()
                         self.is_clicking = False
-                        print("DEBUG: Mouse Up")
-                        
-            except Exception as e:
+            except Exception:
                 pass
         
-        # Filter: Only process gestures that have a mapping in the current profile
+        # Filter gesture by profile
         current_profile = config.PROFILES.get(self.current_profile_name, config.PROFILES['DEFAULT'])
         if gesture != 'UNKNOWN' and gesture not in current_profile:
             gesture = 'UNKNOWN'
@@ -399,7 +189,7 @@ class GestureControllerApp:
         if gesture != 'UNKNOWN':
              self.last_hand_detected_time = time.time()
         
-        # Check if a new, valid gesture is detected and cooldown has passed
+        # Execute shortcut
         current_time = time.time()
         if gesture != 'UNKNOWN' and gesture != self.last_gesture:
             if current_time - self.last_gesture_time > config.GESTURE_COOLDOWN:
@@ -410,74 +200,51 @@ class GestureControllerApp:
         elif gesture == 'UNKNOWN':
              self.last_gesture = None
 
-
     def _update_app_state(self):
-        """Updates active profile and checks for fullscreen overlay."""
-        window_title = self.get_active_window_title()
+        """Updates active profile using robust window matching."""
+        info = self.window_manager.get_active_window_info()
+        title = info.get('title', '')
+        process = info.get('process', '')
+        win_class = info.get('class', '')
         
-        # 1. Profile Switching
         new_profile = 'DEFAULT'
-        for title_part, profile_name in config.WINDOW_PROFILE_MAP.items():
-            if title_part.lower() in window_title.lower():
-                new_profile = profile_name
+        
+        # Check against rules in order
+        for rule in config.APP_MATCHING_RULES:
+            match = True
+            
+            # 1. Process Name Match (Exact)
+            if 'process' in rule and rule['process'].lower() != process.lower():
+                match = False
+                
+            # 2. Window Class Match (Exact)
+            if match and 'class' in rule and rule['class'] != win_class:
+                match = False
+                
+            # 3. Title Match (Substring)
+            if match and 'title' in rule and rule['title'].lower() not in title.lower():
+                match = False
+                
+            if match:
+                new_profile = rule['profile']
                 break
         
         if new_profile != self.current_profile_name:
-            print(f"DEBUG: Switched to Profile: {new_profile} (Window: {window_title})")
+            print(f"DEBUG: Switched Profile to {new_profile} (App: {process}, Class: {win_class})")
             self.current_profile_name = new_profile
             self.ui_manager.update_status(f"Profile: {new_profile}")
 
-        # Overlay mode is now manual - user clicks "Start" to enter it
-
-    def get_active_window_title(self):
-        """Returns the title of the current foreground window."""
-        try:
-            hwnd = ctypes.windll.user32.GetForegroundWindow()
-            length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
-            buff = ctypes.create_unicode_buffer(length + 1)
-            ctypes.windll.user32.GetWindowTextW(hwnd, buff, length + 1)
-            return buff.value
-        except Exception:
-            return ""
-
-    def check_fullscreen(self):
-        try:
-            user32 = ctypes.windll.user32
-            screen_width = user32.GetSystemMetrics(0)
-            screen_height = user32.GetSystemMetrics(1)
-            hwnd = user32.GetForegroundWindow()
-            
-            if hwnd == self.app_hwnd:
-                return self.ui_manager.is_overlay
-            
-            class RECT(ctypes.Structure):
-                _fields_ = [("left", ctypes.c_long),
-                            ("top", ctypes.c_long),
-                            ("right", ctypes.c_long),
-                            ("bottom", ctypes.c_long)]
-            
-            rect = RECT()
-            user32.GetWindowRect(hwnd, ctypes.byref(rect))
-            win_width = rect.right - rect.left
-            win_height = rect.bottom - rect.top
-            return win_width >= screen_width and win_height >= screen_height
-        except Exception:
-            return False
+    # Legacy method removed: get_active_window_title
 
     def execute_shortcut(self, gesture):
         if self.ui_manager.is_overlay and gesture == 'OPEN_PALM':
             return
 
-        # Get shortcut from current profile
         profile = config.PROFILES.get(self.current_profile_name, config.PROFILES['DEFAULT'])
         shortcut = profile.get(gesture)
         
         if shortcut:
             try:
-                # Audio Feedback
-                if not hasattr(self, 'audio'):
-                     self.audio = AudioFeedback(enabled=config.AUDIO_FEEDBACK_ENABLED)
-                     
                 if "SWIPE" in gesture:
                     self.audio.play_swipe_sound()
                 else:
@@ -487,22 +254,14 @@ class GestureControllerApp:
                 print(f"[{self.current_profile_name}] Executed {gesture}: {shortcut}")
             except Exception as e:
                 print(f"Failed to execute shortcut: {e}")
-                if hasattr(self, 'audio'):
-                    self.audio.play_error_sound()
-        else:
-            # Optional: Play error sound if gesture recognized but not mapped?
-            # self.audio.play_error_sound()
-            pass
+                self.audio.play_error_sound()
 
 if __name__ == "__main__":
     import customtkinter as ctk
     
-    # Enable High DPI scaling
     ctk.set_widget_scaling(1.0)
     ctk.set_window_scaling(1.0)
     
     root = ctk.CTk()
     app = GestureControllerApp(root)
-    # Correctly handle window closing
-    root.protocol("WM_DELETE_WINDOW", lambda: (app.stop(), root.destroy()))
     root.mainloop()
