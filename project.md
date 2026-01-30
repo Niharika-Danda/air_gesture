@@ -3,6 +3,8 @@
 ## Project Overview
 The **Air Gesture Shortcut Controller** is a Python-based application that allows users to control their computer using hand gestures captured via a webcam. It is specifically optimized for presentations, providing an automatic "Overlay Mode" when full-screen applications (like PowerPoint or Google Slides) are detected.
 
+**GitHub Repository:** [https://github.com/Niharika-Danda/air_gesture](https://github.com/Niharika-Danda/air_gesture)
+
 ## Architecture
 The project follows a modular design, separating gesture logic, user interface, and system configuration.
 
