@@ -42,14 +42,20 @@ We made a magic button for you!
 
 ## 🌟 New Magic Powers!
 
-### 1. Choose Your Eye 👁️ (Camera Selection)
-- If you have more than one camera plugged in, use the list at the bottom to pick the best one.
-- You can switch cameras anytime!
+### 1. Modern Dashboard 📊
+- **Sidebar Navigation**: Sleek controls on the left for starting/stopping the camera and settings.
+- **Live Stats**: Real-time cards showing **FPS**, your current **Profile**, and the **Last Gesture** detected.
+- **Smart Hints**: The dashboard now tells you *exactly* what gestures work in your current app!
 
-### 2. Presentation Mode 🎥
-- When you start your slide show in **Full Screen**, the app will automatically shrink into a tiny window in the top corner.
-- This way, you can see yourself and your gestures without blocking your beautiful slides!
-- When you finish presenting, it grows back to normal size.
+### 2. High-Tech Visuals ✨
+- **Neon Glow**: Your hand landmarks glow with a cool cyberpunk effect.
+- **Particle Sparks**: Move your finger fast to emit cyan-colored sparks!
+- **Pointer Trails**: A smooth fading trail follows your movements.
+
+### 3. Presentation & Overlay 🎥
+- **Auto-Overlay**: When you go full-screen, the app shrinks to a tiny, translucent window in the corner.
+- **Floating Controls**: Hover your mouse over the tiny window to see hidden controls.
+- **Toast Notifications**: Smooth popups show you what's happening without blocking your view.
 
 ---
 
