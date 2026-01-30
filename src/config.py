@@ -46,11 +46,20 @@ WINDOW_PROFILE_MAP = {
 }
 
 # Camera and UI Configuration
-CAMERA_INDEX = 0
+CAMERA_INDEX = 2  # Default to Webcam
 WINDOW_TITLE = "Air Gesture Shortcut Controller"
 VIDEO_WIDTH = 1280
 VIDEO_HEIGHT = 720
 AUTO_CALIBRATE_ON_STARTUP = True
+AUTO_START_CAMERA = True # Automatically start camera on launch
+
+# Camera Names (customize these based on your system)
+# Map camera index to a friendly name
+CAMERA_NAMES = {
+    0: "Camo (Virtual)",
+    1: "External Camera",
+    2: "Webcam"
+}
 
 # Hand Detection Settings
 MIN_DETECTION_CONFIDENCE = 0.5 # Detection sensitivity (lower = more sensitive)
@@ -109,6 +118,7 @@ def save_config():
         "GESTURE_COOLDOWN": GESTURE_COOLDOWN,
         "ENABLE_MOUSE": ENABLE_MOUSE,
         "ENABLED_SIGNS": ENABLED_SIGNS,
+        "AUTO_START_CAMERA": AUTO_START_CAMERA,
         "PROFILES": PROFILES
     }
     try:
@@ -119,7 +129,7 @@ def save_config():
         print(f"Error saving config: {e}")
 
 def load_config():
-    global MIN_DETECTION_CONFIDENCE, GESTURE_COOLDOWN, PROFILES, ENABLE_MOUSE, ENABLED_SIGNS
+    global MIN_DETECTION_CONFIDENCE, GESTURE_COOLDOWN, PROFILES, ENABLE_MOUSE, ENABLED_SIGNS, AUTO_START_CAMERA
     if not os.path.exists(CONFIG_FILE):
         return
 
@@ -131,6 +141,7 @@ def load_config():
         GESTURE_COOLDOWN = data.get("GESTURE_COOLDOWN", GESTURE_COOLDOWN)
         ENABLE_MOUSE = data.get("ENABLE_MOUSE", ENABLE_MOUSE)
         ENABLED_SIGNS = data.get("ENABLED_SIGNS", ENABLED_SIGNS)
+        AUTO_START_CAMERA = data.get("AUTO_START_CAMERA", True)
         
         # Update profiles but keep structure
         saved_profiles = data.get("PROFILES", {})

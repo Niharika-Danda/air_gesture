@@ -10,53 +10,51 @@ The project follows a modular design, separating gesture logic, user interface, 
 
 ### Core Components (`src/`)
 - **[main.py](file:///c:/Users/NH/Desktop/NH/Gemini/v1/air_gesture_controller/src/main.py)**: The entry point and orchestrator. It manages the main application loop, camera discovery, and the transition between normal and overlay modes.
-- **[gesture_processor.py](file:///c:/Users/NH/Desktop/NH/Gemini/v1/air_gesture_controller/src/gesture_processor.py)**: Encapsulates hand detection and gesture recognition using MediaPipe. It identifies landarks and maps them to high-level gestures (e.g., `THUMBS_UP`, `OPEN_PALM`).
+- **[gesture_engine.py](file:///c:/Users/NH/Desktop/NH/Gemini/v1/air_gesture_controller/src/gesture_engine.py)**: The core processing unit. It uses MediaPipe for hand tracking and orchestrates gesture recognition (both static and dynamic).
+- **[swipe_engine.py](file:///c:/Users/NH/Desktop/NH/Gemini/v1/air_gesture_controller/src/swipe_engine.py)**: A specialized engine for detecting dynamic swipe gestures (Left/Right) using trajectory analysis and velocity thresholds.
 - **[ui_manager.py](file:///c:/Users/NH/Desktop/NH/Gemini/v1/air_gesture_controller/src/ui_manager.py)**: Handles the Tkinter-based GUI. It manages the video feed display, control buttons, and the logic for the floating overlay window.
-- **[config.py](file:///c:/Users/NH/Desktop/NH/Gemini/v1/air_gesture_controller/src/config.py)**: Centralized configuration for gesture-to-shortcut mappings, camera settings, and confidence thresholds.
+- **[config.py](file:///c:/Users/NH/Desktop/NH/Gemini/v1/air_gesture_controller/src/config.py)**: Centralized configuration for profiles, mappings, and sensitivity settings.
 
 ## Key Features
 
-### 1. Gesture Recognition
-Uses Google's MediaPipe framework to track 21 hand landmarks in real-time. Current supported gestures and their default mappings:
+### 1. Hybrid Gesture Recognition
+Combines multiple detection methods for robust control:
+- **Dynamic Swipes**: Velocity-based swipe detection (Left/Right) for natural slide navigation. works independently of static signs.
+- **Static Signs**: Recognizes poses like `THUMBS_UP`, `OPEN_PALM`, `OK_SIGN` using geometric analysis.
+- **Custom Gestures**: Includes a `GestureRecorder` system to save and recognize custom hand shapes via `custom_gestures.json`.
 
-| Gesture | Shortcut | Action |
-| :--- | :--- | :--- |
-| `THUMBS_UP` | `Right Arrow` | Next Slide |
-| `THUMBS_DOWN` | `Left Arrow` | Previous Slide |
-| `OPEN_PALM` | `F5` | Start Presentation |
-| `V_SIGN` | `B` | Black Screen |
-| `INDEX_POINTING_UP` | `W` | White Screen |
-| `OK_SIGN` | `Home` | First Slide |
-| `SPIDERMAN` | `End` | Last Slide |
+### 2. Application Profiles
+Automatically switches control schemes based on the active window:
+- **Default**: Swipes map to Arrow Keys (Next/Prev Slide).
+- **PowerPoint/Slides**: Optimized for presentation control.
+- **Chrome/Browser**: Swipes map to Tab switching or Back/Forward navigation.
 
-### 2. Permanent Overlay Mode
-The application now defaults to a "Permanent Overlay" mode to ensure visibility while using other applications.
-- **Always On**: The window is permanently set to a small 320x180 floating window.
-- **Top-Right Positioning**: Automatically positions itself at the top-right corner.
-- **Always on Top**: Remains visible above all other windows.
-- **Seamless Interaction**: Allows users to see the camera feed and gesture feedback while controlling the mouse or shortcuts in other apps.
-
-### 3. Camera Management
-Supports multiple webcams with real-time switching via a dropdown menu in the UI.
+### 3. Permanent Overlay Mode
+The application defaults to a "Permanent Overlay" mode:
+- **Always On**: Small 320x180 floating window.
+- **Smart Positioning**: Stays at the top-right, always on top.
+- **Feedback**: Shows the camera feed and recognized gestures in real-time.
 
 ## Environment & Dependencies
-- **Python Version**: Recommended 3.11 (optimized for MediaPipe).
+- **Python Version**: Recommended 3.11+.
 - **Key Libraries**:
-    - `opencv-python`: For video capture and frame processing.
-    - `mediapipe`: For hand tracking and landmark detection.
-    - `pyautogui`: For simulating keyboard shortcut execution.
-    - `Pillow`: For image handling within the Tkinter UI.
+    - `opencv-python`: Video capture.
+    - `mediapipe`: Hand tracking.
+    - `pyautogui`: Keyboard simulation.
+    - `numpy`: Geometric calculations for swipes/custom gestures.
 
 ## File Structure
 ```text
 air_gesture_controller/
 ├── src/
 │   ├── main.py                # Main Application Logic
-│   ├── gesture_processor.py   # Hand Tracking & Gesture Logic
-│   ├── ui_manager.py          # Tkinter GUI & Overlay Logic
-│   └── config.py              # Configuration & Shortcut Mappings
-├── run.bat                    # Windows Launcher (One-click setup)
-├── run.sh                     # Linux/Mac Launcher
-├── requirements.txt           # Project Dependencies
-└── README.md                  # User-friendly Guide
+│   ├── gesture_engine.py      # Core Gesture Processor
+│   ├── swipe_engine.py        # Dynamic Swipe Logic
+│   ├── gesture_recorder.py    # Custom Gesture Saving/Loading
+│   ├── position_smoother.py   # Cursor/Landmark Smoothing
+│   ├── ui_manager.py          # Tkinter GUI
+│   └── config.py              # Configuration & Mappings
+├── run.bat                    # Windows Launcher
+├── requirements.txt           # Dependencies
+└── README.md                  # User Guide
 ```

@@ -109,7 +109,7 @@ class AppUIManager:
         self.controls_frame.columnconfigure(1, weight=1) # Spacer
 
         # Status
-        self.status_label = ctk.CTkLabel(self.controls_frame, text="Status: Ready", font=("Roboto Medium", 16))
+        self.status_label = ctk.CTkLabel(self.controls_frame, text="Status: Idle - Press Start", font=("Roboto Medium", 16))
         self.status_label.grid(row=0, column=0, padx=20, pady=15, sticky="w")
         
         # Camera Selection
@@ -122,11 +122,11 @@ class AppUIManager:
         )
         self.camera_combo.grid(row=0, column=2, padx=10, pady=15)
         
-        # Buttons
-        self.start_button = ctk.CTkButton(self.controls_frame, text="Start Camera", command=start_callback, fg_color="#28a745", hover_color="#218838")
+        # Buttons (disabled initially until camera starts)
+        self.start_button = ctk.CTkButton(self.controls_frame, text="Start", command=start_callback, fg_color="#28a745", hover_color="#218838", state="disabled")
         self.start_button.grid(row=0, column=3, padx=10, pady=15)
 
-        self.stop_button = ctk.CTkButton(self.controls_frame, text="Stop Camera", command=stop_callback, fg_color="#dc3545", hover_color="#c82333")
+        self.stop_button = ctk.CTkButton(self.controls_frame, text="Stop", command=stop_callback, fg_color="#dc3545", hover_color="#c82333", state="disabled")
         self.stop_button.grid(row=0, column=4, padx=10, pady=15)
 
         # Settings Button
@@ -414,22 +414,24 @@ class AppUIManager:
         """Draws performance dashboard and gesture feedback directly on the OpenCV frame."""
         h, w = frame.shape[:2]
         
-        # 1. Performance Dashboard (Top-Left) - Pill style
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (15, 15), (145, 50), (40, 40, 40), -1)
-        
-        # FPS Counter
+        # 1. FPS Counter (Top-Left) - Bold white text with transparent background
         fps_text = f"FPS: {self.current_fps}"
-        cv2.putText(overlay, fps_text, (25, 40), cv2.FONT_HERSHEY_DUPLEX, 0.5, (220, 220, 220), 1)
         
-        # Hand Status Dot
-        status_color = (100, 255, 100) if self.is_hand_detected else (80, 80, 80)
-        cv2.circle(overlay, (125, 33), 5, status_color, -1)
-        if self.is_hand_detected: # Glow
-             cv2.circle(overlay, (125, 33), 8, status_color, 1)
-
-        # Apply transparency for Dashboard
-        cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
+        # Draw text with outline for visibility on any background
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.7
+        thickness = 2
+        
+        # Black outline for contrast
+        cv2.putText(frame, fps_text, (20, 35), font, font_scale, (0, 0, 0), thickness + 2, cv2.LINE_AA)
+        # White bold text
+        cv2.putText(frame, fps_text, (20, 35), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
+        
+        # Hand Status Indicator (small dot next to FPS)
+        status_color = (100, 255, 100) if self.is_hand_detected else (100, 100, 100)
+        cv2.circle(frame, (110, 30), 6, status_color, -1)
+        if self.is_hand_detected:
+            cv2.circle(frame, (110, 30), 9, status_color, 1)
         
         # 2. visual Gesture Toast (Bottom-Center)
         if self.gesture_overlay_text:
@@ -561,6 +563,15 @@ class AppUIManager:
             
         except Exception as e:
             pass
+
+    def clear_canvas(self):
+        """Clears the canvas to black when camera is stopped."""
+        self.canvas.delete("all")
+        self.photo = None
+        # Also clear preview if in overlay mode
+        if self.preview_canvas:
+            self.preview_canvas.delete("all")
+            self.preview_photo = None
 
     def update_status(self, text):
         self.status_label.configure(text=text)

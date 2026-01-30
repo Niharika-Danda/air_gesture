@@ -44,109 +44,9 @@ from src.ui_manager import AppUIManager
 from src.audio_feedback import AudioFeedback
 from src import config
 
-class GestureControllerApp:
-    def __init__(self, root):
-        self.root = root
-        self.is_running = False
-        self.last_gesture = None
-        self.last_gesture_time = 0
-        self.frame_count = 0
-        
-        # Audio Feedback
-        self.audio = AudioFeedback(enabled=config.AUDIO_FEEDBACK_ENABLED)
-        
-        # FPS Tracking
-        self.fps_start_time = time.time()
-        self.fps_frame_count = 0
-        self.current_fps = 0
-        
-        # Adaptive FPS state
-        self.last_hand_detected_time = time.time()
-        
-        # Profile state
-        self.current_profile_name = 'DEFAULT'
-        
-        # Camera discovery
-        self.camera_indices = self.detect_cameras()
-        self.available_cameras = [f"Camera {i}" for i in self.camera_indices]
-        if not self.camera_indices:
-             self.available_cameras = ["No Camera Found"]
-             config.CAMERA_INDEX = -1
-        else:
-             config.CAMERA_INDEX = self.camera_indices[0]
-
-        # Initialize components
-        self.gesture_processor = GestureProcessor(
-            min_detection_confidence=config.MIN_DETECTION_CONFIDENCE,
-            min_tracking_confidence=config.MIN_TRACKING_CONFIDENCE
-        )
-        self.ui_manager = AppUIManager(
-            self.root,
-            self.start,
-            self.stop,
-            config.WINDOW_TITLE,
-            self.available_cameras,
-            self.change_camera,
-            self.reload_configuration
-        )
-        self.cap = None
-        
-        self.app_hwnd = None
-        self.root.after(100, self._capture_app_hwnd)
-
-    def reload_configuration(self):
-        """Re-initializes components with new config values."""
-        print("DEBUG: Reloading configuration...")
-        if self.gesture_processor:
-            self.gesture_processor.close()
-            
-        self.gesture_processor = GestureProcessor(
-            min_detection_confidence=config.MIN_DETECTION_CONFIDENCE,
-            min_tracking_confidence=config.MIN_TRACKING_CONFIDENCE
-        )
-        self.ui_manager.update_status("Settings Saved & Reloaded")
-
-    def _capture_app_hwnd(self):
-        try:
-            self.app_hwnd = ctypes.windll.user32.GetActiveWindow()
-            if not self.app_hwnd:
-                self.app_hwnd = ctypes.windll.user32.FindWindowW(None, config.WINDOW_TITLE)
-            print(f"DEBUG: App HWND captured: {self.app_hwnd}")
-        except Exception as e:
-            print(f"DEBUG: Failed to capture app HWND: {e}")
-
-    def detect_cameras(self):
-        index = 0
-        arr = []
-        for i in range(5):
-            cap = cv2.VideoCapture(i)
-            if cap.read()[0]:
-                arr.append(i)
-                cap.release()
-            index += 1
-        return arr
-
-    def change_camera(self, selection_index):
-        if selection_index < 0 or selection_index >= len(self.camera_indices):
-            return
-        new_camera_index = self.camera_indices[selection_index]
-        config.CAMERA_INDEX = new_camera_index
-        if self.is_running:
-            self.stop()
-            self.root.after(100, self.start)
-
-    def start(self):
-        if not self.is_running:
-            self.is_running = True
-            self.ui_manager.update_status("Status: Initializing Camera...")
-            self.ui_manager.start_button.configure(state="disabled")
-            
-            import threading
-            threading.Thread(target=self._init_camera, daemon=True).start()
-
-import queue
 import threading
-from src import config
+import queue
+
 
 class VisionThread(threading.Thread):
     def __init__(self, camera_index, result_queue):
@@ -160,9 +60,15 @@ class VisionThread(threading.Thread):
 
     def run(self):
         try:
-            self.cap = cv2.VideoCapture(self.camera_index)
+            # Use DirectShow on Windows for faster/reliable camera access
+            self.cap = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)
+            if not self.cap.isOpened():
+                print(f"ERROR: Failed to open camera {self.camera_index}")
+                return
+                
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.VIDEO_WIDTH)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.VIDEO_HEIGHT)
+            print(f"DEBUG: VisionThread started with camera {self.camera_index}")
             
             self.gesture_processor = GestureProcessor(
                 min_detection_confidence=config.MIN_DETECTION_CONFIDENCE,
@@ -242,13 +148,15 @@ class GestureControllerApp:
         self.vision_thread = None
         
         # Camera discovery
-        self.camera_indices = self.detect_cameras()
-        self.available_cameras = [f"Camera {i}" for i in self.camera_indices]
+        self.camera_indices, self.camera_names = self.detect_cameras()
+        self.available_cameras = self.camera_names if self.camera_names else ["No Camera Found"]
         if not self.camera_indices:
-             self.available_cameras = ["No Camera Found"]
              config.CAMERA_INDEX = -1
-        else:
+        elif config.CAMERA_INDEX not in self.camera_indices:
+             # Configured camera not available, use first available
              config.CAMERA_INDEX = self.camera_indices[0]
+             print(f"DEBUG: Configured camera not found, using Camera {config.CAMERA_INDEX}")
+        # else: keep the configured CAMERA_INDEX
 
         # Initialize components
         # Note: GestureProcessor is now owned by the thread
@@ -265,6 +173,11 @@ class GestureControllerApp:
         
         self.app_hwnd = None
         self.root.after(100, self._capture_app_hwnd)
+
+        # Auto-Start logic
+        if getattr(config, 'AUTO_START_CAMERA', True):
+            print("DEBUG: Auto-starting camera...")
+            self.root.after(500, self.start)
 
     def reload_configuration(self):
         """Restarts the thread to pick up new config."""
@@ -284,47 +197,82 @@ class GestureControllerApp:
             print(f"DEBUG: Failed to capture app HWND: {e}")
 
     def detect_cameras(self):
-        index = 0
-        arr = []
-        for i in range(5):
-            cap = cv2.VideoCapture(i)
-            if cap.read()[0]:
-                arr.append(i)
-                cap.release()
-            index += 1
-        return arr
+        """Fast camera detection - returns (indices, names) with friendly names from config."""
+        indices = []
+        names = []
+        for i in range(3):  # Check first 3 camera indices
+            # Use DirectShow on Windows for faster enumeration
+            cap = cv2.VideoCapture(i, cv2.CAP_DSHOW)
+            if cap.isOpened():
+                indices.append(i)
+                # Get resolution to help identify
+                width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                # Use configured name if available, otherwise show index + resolution
+                friendly_name = config.CAMERA_NAMES.get(i, f"Camera {i}")
+                names.append(f"{friendly_name} ({width}x{height})")
+                print(f"DEBUG: Camera {i} detected: {friendly_name} at {width}x{height}")
+            cap.release()
+        
+        # Reorder so configured camera appears first
+        preferred_idx = config.CAMERA_INDEX
+        if preferred_idx in indices:
+            pos = indices.index(preferred_idx)
+            # Move preferred camera to top
+            indices.insert(0, indices.pop(pos))
+            names.insert(0, names.pop(pos))
+            print(f"DEBUG: Preferred camera {preferred_idx} moved to top")
+        
+        return indices, names
 
     def change_camera(self, selection_index):
         if selection_index < 0 or selection_index >= len(self.camera_indices):
             return
         new_camera_index = self.camera_indices[selection_index]
+        
+        # Don't restart if same camera
+        if new_camera_index == config.CAMERA_INDEX and self.is_running:
+            print(f"DEBUG: Camera {new_camera_index} already selected and running")
+            return
+            
         config.CAMERA_INDEX = new_camera_index
+        print(f"DEBUG: Switching to camera {new_camera_index}")
+        
         if self.is_running:
             self.stop()
-            self.root.after(100, self.start)
+            # Wait longer for camera resource to be fully released
+            self.root.after(500, self.start)
 
     def start(self):
-        if not self.is_running:
-            # Safety: Check for lingering thread
-            if self.vision_thread and self.vision_thread.is_alive():
-                print("DEBUG: Waiting for previous thread to die...")
-                self.vision_thread.join(timeout=2.0)
+        # If already running, toggle to overlay mode
+        if self.is_running:
+            if not self.ui_manager.is_overlay:
+                self.ui_manager.enter_overlay_mode()
+            return
             
-            self.is_running = True
-            self.ui_manager.update_status("Status: Starting Engine...")
-            self.ui_manager.start_button.configure(state="disabled")
-            
-            # Reset Queue to clear slate
-            self.result_queue = queue.Queue(maxsize=2)
-            
-            # Start Vision Thread
-            self.vision_thread = VisionThread(config.CAMERA_INDEX, self.result_queue)
-            self.vision_thread.start()
-            
-            self.root.after(100, lambda: self.ui_manager.update_status("Status: Running"))
-            self.root.after(100, lambda: self.ui_manager.start_button.configure(state="normal"))
-            self.root.after(50, lambda: self.ui_manager.enter_overlay_mode()) # Force overlay immediately
-            self.root.after(100, self.update)
+        # First start: Launch camera engine
+        # Safety: Check for lingering thread
+        if self.vision_thread and self.vision_thread.is_alive():
+            print("DEBUG: Waiting for previous thread to die...")
+            self.vision_thread.join(timeout=2.0)
+        
+        self.is_running = True
+        self.ui_manager.update_status("Status: Starting Engine...")
+        self.ui_manager.start_button.configure(state="disabled")
+        
+        # Reset Queue to clear slate
+        self.result_queue = queue.Queue(maxsize=2)
+        
+        # Start Vision Thread
+        self.vision_thread = VisionThread(config.CAMERA_INDEX, self.result_queue)
+        self.vision_thread.start()
+        
+        self.root.after(100, lambda: self.ui_manager.update_status("Status: Running"))
+        self.root.after(100, lambda: self.ui_manager.start_button.configure(state="normal"))
+        self.root.after(100, lambda: self.ui_manager.stop_button.configure(state="normal"))
+        # Don't enter overlay here - camera shows in main window first
+        # User clicks "Start" again to enter overlay mode
+        self.root.after(100, self.update)
 
     def stop(self):
         if self.is_running:
@@ -338,9 +286,13 @@ class GestureControllerApp:
                 if self.vision_thread.is_alive():
                      print("WARNING: VisionThread did not stop cleanly!")
                 self.vision_thread = None
+            
+            # Clear the canvas to black
+            self.ui_manager.clear_canvas()
                 
             self.ui_manager.update_status("Status: Stopped")
             self.ui_manager.start_button.configure(state="normal")
+            self.ui_manager.stop_button.configure(state="disabled")
             
         # Don't destroy root here, this is just stopping the engine
         # self.root.destroy() is called by the window close handler
@@ -475,10 +427,7 @@ class GestureControllerApp:
             self.current_profile_name = new_profile
             self.ui_manager.update_status(f"Profile: {new_profile}")
 
-        # 2. PERMANENT Overlay Mode (Forced)
-        # User requested permanent small size overlay.
-        if not self.ui_manager.is_overlay:
-            self.ui_manager.enter_overlay_mode()
+        # Overlay mode is now manual - user clicks "Start" to enter it
 
     def get_active_window_title(self):
         """Returns the title of the current foreground window."""
