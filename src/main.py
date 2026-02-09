@@ -156,28 +156,32 @@ class GestureControllerApp:
         # --- MOUSE CONTROL ---
         if pointer_info and config.ENABLE_MOUSE:
             try:
-                screen_w, screen_h = pyautogui.size()
-                margin = 0.2
-                x_cam = pointer_info['x']
-                y_cam = pointer_info['y']
-                x_norm = (x_cam - margin) / (1 - 2*margin)
-                y_norm = (y_cam - margin) / (1 - 2*margin)
-                x_norm = max(0.0, min(1.0, x_norm))
-                y_norm = max(0.0, min(1.0, y_norm))
+                # Only move pointer if 'move' flag is True
+                # This prevents pointer movement during click-only actions (like pinch)
+                should_move = pointer_info.get('move', True)  # Default True for backward compatibility
                 
-                target_x =  int(x_norm * screen_w)
-                target_y = int(y_norm * screen_h)
+                if should_move:
+                    screen_w, screen_h = pyautogui.size()
+                    margin = 0.2
+                    x_cam = pointer_info['x']
+                    y_cam = pointer_info['y']
+                    x_norm = (x_cam - margin) / (1 - 2*margin)
+                    y_norm = (y_cam - margin) / (1 - 2*margin)
+                    x_norm = max(0.0, min(1.0, x_norm))
+                    y_norm = max(0.0, min(1.0, y_norm))
+                    
+                    target_x = int(x_norm * screen_w)
+                    target_y = int(y_norm * screen_h)
+                    
+                    pyautogui.moveTo(target_x, target_y)
                 
-                pyautogui.moveTo(target_x, target_y)
-                
+                # Handle click (works regardless of move flag)
                 if pointer_info['click']:
                     if not self.is_clicking:
-                        pyautogui.mouseDown()
+                        pyautogui.click()  # Single left click
                         self.is_clicking = True
                 else:
-                    if self.is_clicking:
-                        pyautogui.mouseUp()
-                        self.is_clicking = False
+                    self.is_clicking = False
             except Exception:
                 pass
         

@@ -118,6 +118,11 @@ class GestureProcessor:
         # Legacy pointer state (kept for fallback)
         self.prev_pointer_x = 0
         self.prev_pointer_y = 0
+        
+        # Click freeze state - prevents pointer drift during pinch
+        self.click_freeze_active = False
+        self.frozen_pointer_x = 0
+        self.frozen_pointer_y = 0
 
     def process_frame(self, frame):
         """
@@ -165,28 +170,94 @@ class GestureProcessor:
                 
                 # self.mp_drawing.draw_landmarks(frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS)
                 
-                # --- POINTER LOGIC (Index Tip with Smoothing) ---
-                # Get raw positions
-                raw_index_x = self.landmarks[8].x
-                raw_index_y = self.landmarks[8].y
+                # --- POINTER LOGIC (Midpoint between Index & Middle with Smoothing) ---
                 
-                # Apply smoothing for stable pointer
-                curr_x, curr_y = self.pointer_smoother.update(raw_index_x, raw_index_y)
+                # Get index and middle fingertip positions
+                index_tip_x, index_tip_y = self.landmarks[8].x, self.landmarks[8].y
+                middle_tip_x, middle_tip_y = self.landmarks[12].x, self.landmarks[12].y
                 
-                # Get filtered thumb position for click detection
-                thumb_x, thumb_y = self.filtered_landmarks[4] if self.filtered_landmarks else (self.landmarks[4].x, self.landmarks[4].y)
-                index_x, index_y = self.filtered_landmarks[8] if self.filtered_landmarks else (self.landmarks[8].x, self.landmarks[8].y)
+                # Calculate distance between index and middle fingertips
+                fingers_distance = math.hypot(index_tip_x - middle_tip_x, index_tip_y - middle_tip_y)
                 
-                # Check Click (Pinch) using filtered positions
+                # Threshold for "fingers stuck together" (normalized coordinates)
+                # Smaller value = fingers must be closer together
+                FINGERS_TOGETHER_THRESHOLD = 0.06
+                
+                # Pointer only moves when index and middle fingers are close together
+                is_pointing = fingers_distance < FINGERS_TOGETHER_THRESHOLD
+                
+                # Use midpoint between index and middle for more accurate tracking
+                raw_pointer_x = (index_tip_x + middle_tip_x) / 2.0
+                raw_pointer_y = (index_tip_y + middle_tip_y) / 2.0
+                
+                # Check each finger state for reference (used elsewhere)
+                # Index finger (landmarks 8=tip, 6=PIP)
+                index_open = self.landmarks[8].y < self.landmarks[6].y
+                # Middle finger (landmarks 12=tip, 10=PIP)
+                middle_open = self.landmarks[12].y < self.landmarks[10].y
+                # Ring finger (landmarks 16=tip, 14=PIP)
+                ring_open = self.landmarks[16].y < self.landmarks[14].y
+                # Pinky finger (landmarks 20=tip, 18=PIP)
+                pinky_open = self.landmarks[20].y < self.landmarks[18].y
+                
+                # --- PINCH CLICK DETECTION (Thumb + Index) ---
+                # Get thumb and index tip positions
+                thumb_x, thumb_y = self.landmarks[4].x, self.landmarks[4].y
+                index_x, index_y = self.landmarks[8].x, self.landmarks[8].y
+                
+                # Calculate distance between thumb and index
+                pinch_dist = math.hypot(thumb_x - index_x, thumb_y - index_y)
+                
+                # Click threshold - when thumb and index come close together
                 from src import config
-                pad_dist = math.hypot(index_x - thumb_x, index_y - thumb_y)
-                is_clicking = pad_dist < config.CLICK_THRESHOLD
+                is_clicking = pinch_dist < config.CLICK_THRESHOLD
                 
-                pointer_info = {
-                    'x': curr_x,
-                    'y': curr_y,
-                    'click': is_clicking
-                }
+                # Click freeze threshold - slightly larger than click threshold
+                # When approaching pinch, freeze pointer to prevent drift
+                click_freeze_threshold = config.CLICK_THRESHOLD * 2.5
+                
+                # Apply smoothing for stable pointer (using midpoint)
+                curr_x, curr_y = self.pointer_smoother.update(raw_pointer_x, raw_pointer_y)
+                
+                # Freeze pointer when starting to pinch (prevents drift)
+                if pinch_dist < click_freeze_threshold and not self.click_freeze_active:
+                    # User is starting to pinch - freeze the pointer position
+                    self.click_freeze_active = True
+                    self.frozen_pointer_x = curr_x
+                    self.frozen_pointer_y = curr_y
+                elif pinch_dist >= click_freeze_threshold:
+                    # User has released pinch - unfreeze
+                    self.click_freeze_active = False
+                
+                # Use frozen position if click freeze is active
+                if self.click_freeze_active:
+                    pointer_x = self.frozen_pointer_x
+                    pointer_y = self.frozen_pointer_y
+                else:
+                    pointer_x = curr_x
+                    pointer_y = curr_y
+                
+                # Pointer movement only works when in pointing gesture (fingers together)
+                # Click ONLY works with thumb+index pinch (separate from pointing)
+                if is_pointing:
+                    # Pointing mode: pointer moves, NO click here
+                    pointer_info = {
+                        'x': pointer_x,
+                        'y': pointer_y,
+                        'click': False,  # Click does NOT work while moving
+                        'move': True  # Allow pointer movement
+                    }
+                elif is_clicking:
+                    # Click-only mode: just click with pinch, do NOT move pointer
+                    pointer_info = {
+                        'x': self.frozen_pointer_x if self.click_freeze_active else self.prev_pointer_x,
+                        'y': self.frozen_pointer_y if self.click_freeze_active else self.prev_pointer_y,
+                        'click': True,
+                        'move': False  # Do NOT move pointer
+                    }
+                else:
+                    pointer_info = None  # No action when neither pointing nor clicking
+
                 
                 # --- VISUAL EFFECTS ---
                 h, w, _ = frame.shape
@@ -389,10 +460,10 @@ class GestureProcessor:
             cv2.line(frame, pt1, pt2, (255, 255, 0), thickness) 
 
     def _draw_neon_landmarks(self, frame, hand_landmarks):
-        """Draws hand landmarks with a neon glow effect."""
+        """Draws hand landmarks with a neon glow effect (smaller size for visibility)."""
         h, w, _ = frame.shape
         
-        # 1. Draw Connections (Thick, Semi-transparent background + Thin bright foreground)
+        # 1. Draw Connections (Thinner lines for better hand visibility)
         connections = self.mp_hands.HAND_CONNECTIONS
         
         # Cache coordinates
@@ -400,30 +471,30 @@ class GestureProcessor:
         for idx, landmark in enumerate(hand_landmarks.landmark):
             coords[idx] = (int(landmark.x * w), int(landmark.y * h))
             
-        # Draw Glow Lines (Darker Cyan)
+        # Draw Glow Lines (Darker Cyan) - reduced thickness
         for start_idx, end_idx in connections:
              if start_idx in coords and end_idx in coords:
-                 cv2.line(frame, coords[start_idx], coords[end_idx], (200, 200, 0), 6) # Glow
+                 cv2.line(frame, coords[start_idx], coords[end_idx], (200, 200, 0), 3) # Glow (was 6)
                  
-        # Draw Core Lines (White/Bright)
+        # Draw Core Lines (White/Bright) - reduced thickness
         for start_idx, end_idx in connections:
              if start_idx in coords and end_idx in coords:
-                 cv2.line(frame, coords[start_idx], coords[end_idx], (255, 255, 255), 2) # Core
+                 cv2.line(frame, coords[start_idx], coords[end_idx], (255, 255, 255), 1) # Core (was 2)
 
-        # 2. Draw Landmarks (Glowing Orbs)
-        # Finger Tips get special color? (e.g., Index = Magenta)
+        # 2. Draw Landmarks (Smaller Glowing Orbs)
+        # Finger Tips get special color
         tips = [4, 8, 12, 16, 20]
         
         for idx, (cx, cy) in coords.items():
-            # Base Glow
-            radius = 6
+            # Base - reduced radius
+            radius = 3  # Was 6
             color = (0, 255, 255) # Yellow-ish
             if idx in tips:
-                radius = 8
-                color = (0, 255, 0) # Green Tips (Index) or just variable
+                radius = 4  # Was 8
+                color = (0, 255, 0) # Green Tips
                 if idx == 8: color = (255, 0, 255) # Magenta Index
                 
-            # Outer Glow
-            cv2.circle(frame, (cx, cy), radius + 4, color, -1)
-            # Inner Core
-            cv2.circle(frame, (cx, cy), radius - 2, (255, 255, 255), -1)
+            # Outer Glow - reduced
+            cv2.circle(frame, (cx, cy), radius + 2, color, -1)  # Was radius + 4
+            # Inner Core - reduced
+            cv2.circle(frame, (cx, cy), max(1, radius - 1), (255, 255, 255), -1)  # Was radius - 2

@@ -192,32 +192,125 @@ class LandmarkSmoother:
         return raw_x, raw_y
 
 
+class OneEuroFilter:
+    """
+    One Euro Filter for smooth, low-latency signal filtering.
+    Better than simple exponential smoothing - reduces jitter while maintaining responsiveness.
+    Reference: https://cristal.univ-lille.fr/~casiez/1euro/
+    """
+    
+    def __init__(self, min_cutoff=1.0, beta=0.007, d_cutoff=1.0):
+        """
+        Args:
+            min_cutoff: Minimum cutoff frequency (lower = smoother when still)
+            beta: Speed coefficient (higher = more responsive when moving fast)
+            d_cutoff: Derivative cutoff frequency
+        """
+        self.min_cutoff = min_cutoff
+        self.beta = beta
+        self.d_cutoff = d_cutoff
+        
+        self.x_prev = None
+        self.dx_prev = 0.0
+        self.t_prev = None
+        
+    def reset(self):
+        """Reset the filter state."""
+        self.x_prev = None
+        self.dx_prev = 0.0
+        self.t_prev = None
+    
+    def _alpha(self, cutoff, dt):
+        """Compute smoothing factor alpha."""
+        tau = 1.0 / (2.0 * np.pi * cutoff)
+        return 1.0 / (1.0 + tau / dt)
+    
+    def filter(self, x, t=None):
+        """
+        Filter a value.
+        
+        Args:
+            x: Raw value
+            t: Timestamp (optional, uses frame time if not provided)
+            
+        Returns:
+            Filtered value
+        """
+        import time as time_module
+        if t is None:
+            t = time_module.time()
+            
+        if self.x_prev is None:
+            self.x_prev = x
+            self.t_prev = t
+            return x
+        
+        dt = t - self.t_prev
+        if dt <= 0:
+            dt = 1.0 / 60.0  # Default to 60 FPS
+        
+        # Estimate derivative
+        dx = (x - self.x_prev) / dt
+        
+        # Filter derivative
+        alpha_d = self._alpha(self.d_cutoff, dt)
+        dx_hat = alpha_d * dx + (1.0 - alpha_d) * self.dx_prev
+        
+        # Adaptive cutoff based on speed
+        cutoff = self.min_cutoff + self.beta * abs(dx_hat)
+        
+        # Filter position
+        alpha = self._alpha(cutoff, dt)
+        x_hat = alpha * x + (1.0 - alpha) * self.x_prev
+        
+        # Store for next iteration
+        self.x_prev = x_hat
+        self.dx_prev = dx_hat
+        self.t_prev = t
+        
+        return x_hat
+
+
 class PointerSmoother:
     """
     Specialized smoother for mouse pointer control.
-    Uses adaptive smoothing based on movement speed for responsive yet stable control.
+    Uses One Euro Filter + Kalman for responsive yet stable cursor control.
     """
     
-    def __init__(self, base_smoothing=0.02, base_responsiveness=0.08):
+    def __init__(self, base_smoothing=0.005, base_responsiveness=0.02):
         """
-        Initialize pointer smoother with adaptive parameters.
+        Initialize pointer smoother - optimized for FAST, responsive movement.
         """
-        self.smoother = PositionSmoother2D(base_smoothing, base_responsiveness)
+        # Kalman filter for velocity-aware prediction
+        self.kalman = PositionSmoother2D(base_smoothing, base_responsiveness)
+        
+        # One Euro Filters for final smoothing (one for X, one for Y)
+        # Higher min_cutoff = much faster response  
+        # Higher beta = very responsive when moving fast
+        self.euro_x = OneEuroFilter(min_cutoff=4.0, beta=1.2, d_cutoff=1.0)
+        self.euro_y = OneEuroFilter(min_cutoff=4.0, beta=1.2, d_cutoff=1.0)
+        
         self.base_smoothing = base_smoothing
         self.base_responsiveness = base_responsiveness
         self.last_position = None
+        self.velocity_history = []  # Track recent velocities for smoothing
+        self.max_velocity_history = 2  # Very short history for fastest response
     
     def reset(self):
         """Reset the pointer smoother."""
-        self.smoother.reset()
+        self.kalman.reset()
+        self.euro_x.reset()
+        self.euro_y.reset()
         self.last_position = None
+        self.velocity_history = []
     
     def update(self, x, y):
         """
-        Update pointer position with adaptive smoothing.
+        Update pointer position with enhanced smoothing.
         
-        When moving fast: Less smoothing for responsiveness
-        When stationary/slow: More smoothing for stability
+        Uses a two-stage approach:
+        1. Kalman filter for velocity-aware prediction
+        2. One Euro Filter for final jitter reduction
         
         Args:
             x, y: Raw pointer position (0.0 to 1.0)
@@ -225,19 +318,50 @@ class PointerSmoother:
         Returns:
             Smoothed (x, y) position
         """
-        # Calculate movement speed
+        import time as time_module
+        current_time = time_module.time()
+        
+        # Calculate movement speed for adaptive behavior
         if self.last_position is not None:
             dx = x - self.last_position[0]
             dy = y - self.last_position[1]
             speed = np.sqrt(dx**2 + dy**2)
             
-            # Adaptive smoothing: faster movement = trust measurements more
-            if speed > 0.05:  # Fast movement
-                self.smoother.R = np.eye(2) * (self.base_responsiveness * 0.3)
-            elif speed > 0.02:  # Medium movement
-                self.smoother.R = np.eye(2) * self.base_responsiveness
-            else:  # Slow/stationary
-                self.smoother.R = np.eye(2) * (self.base_responsiveness * 2.0)
+            # Track velocity history for smoother speed detection
+            self.velocity_history.append(speed)
+            if len(self.velocity_history) > self.max_velocity_history:
+                self.velocity_history.pop(0)
+            
+            avg_speed = np.mean(self.velocity_history)
+            
+            # Adaptive Kalman - MINIMAL smoothing for fastest response
+            if avg_speed > 0.04:  # Fast movement - almost direct tracking
+                self.kalman.R = np.eye(2) * (self.base_responsiveness * 0.05)
+            elif avg_speed > 0.02:  # Medium-fast movement
+                self.kalman.R = np.eye(2) * (self.base_responsiveness * 0.1)
+            elif avg_speed > 0.008:  # Medium movement
+                self.kalman.R = np.eye(2) * (self.base_responsiveness * 0.3)
+            elif avg_speed > 0.002:  # Slow movement
+                self.kalman.R = np.eye(2) * (self.base_responsiveness * 0.6)
+            else:  # Nearly stationary - light smoothing
+                self.kalman.R = np.eye(2) * self.base_responsiveness
         
         self.last_position = (x, y)
-        return self.smoother.update((x, y))
+        
+        # Stage 1: Kalman filter
+        kx, ky = self.kalman.update((x, y))
+        
+        # Stage 2: One Euro Filter for final smoothing
+        fx = self.euro_x.filter(kx, current_time)
+        fy = self.euro_y.filter(ky, current_time)
+        
+        return fx, fy
+    
+    def get_velocity(self):
+        """
+        Get the current estimated velocity.
+        
+        Returns:
+            Tuple of (vx, vy) velocity
+        """
+        return self.kalman.get_velocity()

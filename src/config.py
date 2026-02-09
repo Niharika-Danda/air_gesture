@@ -121,7 +121,7 @@ GESTURE_CONFIRMATION_FRAMES = 2 # Number of consecutive/voting frames to confirm
 # Mouse Control Settings
 MOUSE_SENSITIVITY = 1.8      # Increased to 1.8 for lighter feel (less hand movement)
 MOUSE_SMOOTHING = 0.35       # Increased to 0.35 (More responsive/snappy, less "heavy")
-CLICK_THRESHOLD = 0.035      # Tightened to prevent accidental clicks
+CLICK_THRESHOLD = 0.06      # Increased for thumb-middle finger tap
 ENABLE_MOUSE = False         # Master toggle for mouse control
 
 # Performance & Robustness Settings

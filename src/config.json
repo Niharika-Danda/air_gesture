@@ -1,7 +1,7 @@
 {
     "MIN_DETECTION_CONFIDENCE": 0.6,
     "GESTURE_COOLDOWN": 0.6,
-    "ENABLE_MOUSE": false,
+    "ENABLE_MOUSE": true,
     "ENABLED_SIGNS": [
         "THUMBS_UP",
         "THUMBS_DOWN",
